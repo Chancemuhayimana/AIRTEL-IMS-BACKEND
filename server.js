@@ -55,9 +55,7 @@ let chatbotServiceStartAttempted = false;
 let chatbotIntentCatalogPromise = null;
 let chatbotKnowledgeChunksPromise = null;
 
-app.use(cors({
-  origin: "https://airtel-ims.netlify.app"
-}));
+app.use(cors());
 app.use(express.json({ limit: "5mb" }));
 
 function hashPassword(password) {
@@ -491,6 +489,92 @@ function buildCsv(rows, columns) {
   const header = columns.map((column) => escapeCsvValue(column.label)).join(",");
   const body = rows.map((row) => columns.map((column) => escapeCsvValue(row[column.key])).join(",")).join("\n");
   return [header, body].filter(Boolean).join("\n");
+}
+
+function escapeHtmlValue(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  const stringValue =
+    value instanceof Date
+      ? value.toISOString()
+      : typeof value === "object"
+        ? JSON.stringify(value)
+        : String(value);
+
+  return stringValue
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function buildBrandedHtmlDocument({ title, subtitle, rows, columns, footerNote = "Generated from Airtel IMS." }) {
+  const generatedOn = new Date().toISOString().replace("T", " ").slice(0, 19);
+  const tableHead = columns.map((column) => `<th>${escapeHtmlValue(column.label)}</th>`).join("");
+  const tableBody = rows
+    .map(
+      (row) =>
+        `<tr>${columns
+          .map((column) => `<td>${escapeHtmlValue(row[column.key]) || "&nbsp;"}</td>`)
+          .join("")}</tr>`,
+    )
+    .join("");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtmlValue(title)}</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #f4f7fb; color: #17324d; }
+    .page { max-width: 1280px; margin: 0 auto; padding: 32px; }
+    .sheet { background: #ffffff; border-radius: 20px; overflow: hidden; box-shadow: 0 18px 45px rgba(23, 50, 77, 0.12); }
+    .hero { padding: 28px 32px; background: linear-gradient(135deg, #ffffff 0%, #eef6fb 100%); border-bottom: 4px solid #d71920; display: flex; justify-content: space-between; gap: 20px; align-items: center; }
+    .hero img { height: 46px; width: auto; display: block; }
+    .eyebrow { margin: 0 0 8px; font-size: 12px; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase; color: #d71920; }
+    h1 { margin: 0; font-size: 28px; line-height: 1.2; }
+    .subtitle { margin: 10px 0 0; font-size: 14px; color: #587287; max-width: 720px; }
+    .meta { text-align: right; font-size: 13px; color: #587287; }
+    .meta strong { display: block; color: #17324d; font-size: 14px; margin-bottom: 6px; }
+    .table-wrap { padding: 22px 32px 32px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; background: #eef6fb; color: #17324d; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; padding: 14px 12px; border-bottom: 1px solid rgba(29, 111, 165, 0.16); }
+    td { padding: 14px 12px; border-bottom: 1px solid rgba(29, 111, 165, 0.12); vertical-align: top; color: #20384d; }
+    tr:nth-child(even) td { background: rgba(238, 246, 251, 0.36); }
+    .footer { padding: 0 32px 28px; color: #587287; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="sheet">
+      <div class="hero">
+        <div>
+          <p class="eyebrow">Airtel Inventory Management System</p>
+          <h1>${escapeHtmlValue(title)}</h1>
+          <p class="subtitle">${escapeHtmlValue(subtitle)}</p>
+        </div>
+        <div class="meta">
+          <img src="/airtel-logo.png" alt="Airtel logo" />
+          <strong>Professional Export</strong>
+          <span>Generated: ${escapeHtmlValue(generatedOn)}</span>
+          <span>Total records: ${rows.length}</span>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>${tableHead}</tr></thead>
+          <tbody>${tableBody}</tbody>
+        </table>
+      </div>
+      <div class="footer">${escapeHtmlValue(footerNote)}</div>
+    </div>
+  </div>
+</body>
+</html>`;
 }
 
 async function buildBackupSnapshotPayload() {
@@ -1188,7 +1272,6 @@ async function ensureUserPhoneColumn() {
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS phone_number VARCHAR(20) NULL
   `);
-
   await pool.query(`
     ALTER TABLE users
     ADD UNIQUE INDEX IF NOT EXISTS uq_users_phone_number (phone_number)
@@ -3176,8 +3259,48 @@ function shouldUseGeneralKnowledgeFallback(message) {
 
   const hasGeneralSignal = generalSignals.some((signal) => normalized.includes(signal));
   const hasAirtelSignal = airtelSignals.some((signal) => normalized.includes(signal));
+  const looksLikeGeneralQuestion =
+    normalized.includes("?") ||
+    normalized.startsWith("who ") ||
+    normalized.startsWith("what ") ||
+    normalized.startsWith("when ") ||
+    normalized.startsWith("where ") ||
+    normalized.startsWith("why ") ||
+    normalized.startsWith("how ");
 
-  return hasGeneralSignal && !hasAirtelSignal;
+  return (hasGeneralSignal && !hasAirtelSignal) || (!hasAirtelSignal && looksLikeGeneralQuestion);
+}
+
+function isProjectDifferentiationQuestion(message) {
+  const normalized = normalizeChatbotText(message);
+
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    (normalized.includes("special") || normalized.includes("unique") || normalized.includes("different")) &&
+    (normalized.includes("project") || normalized.includes("system") || normalized.includes("inventory") || normalized.includes("ims"))
+  ) || (
+    (normalized.includes("compare") || normalized.includes("difference between")) &&
+    (normalized.includes("inventory system") || normalized.includes("other inventory"))
+  );
+}
+
+function buildProjectDifferentiationAnswer() {
+  return {
+    intent: "project_differentiation",
+    answer: [
+      "This project goes beyond basic inventory tracking by managing the full employee device lifecycle from request to approval, assignment, return, maintenance, and retirement.",
+      "It is also strongly role-based, with separate workflows for HR, IT support, IT leadership, storekeeping, and employees instead of treating inventory as a single admin-only process.",
+      "Another standout feature is its operational control layer: OTP and Microsoft sign-in, audit logs, notifications, lifecycle history, branch-aware dashboards, and workflow-specific approvals are all built into the same platform.",
+    ],
+    suggestions: [
+      "How does the request workflow work?",
+      "What should we improve in this system?",
+      "Summarize inventory status",
+    ],
+  };
 }
 
 async function generateGeneralKnowledgeAnswer(message) {
@@ -3272,8 +3395,8 @@ function buildChatbotHelpResponse(scope) {
       "Try asking for inventory status, pending requests, or a specific asset tag.",
     ],
     general: [
-      "I can answer read-only questions about inventory, requests, assignments, returns, issues, and workflows.",
-      "Try asking for a summary, request status, or an asset lookup.",
+      "I can answer Airtel IMS questions and also help with broader work questions like explanations, writing, planning, and improvement ideas.",
+      "Try asking for a system summary, request status, an asset lookup, or a general question.",
     ],
   };
 
@@ -3868,6 +3991,115 @@ async function getInventorySummary(user) {
   };
 }
 
+async function getSystemAdminSummary(user) {
+  const scope = getChatbotRoleScope(user);
+
+  if (scope !== "admin") {
+    return getInventorySummary(user);
+  }
+
+  const [[userStats]] = await pool.query(
+    `
+      SELECT
+        COUNT(*) AS totalUsers,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS activeUsers,
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pendingUsers,
+        SUM(CASE WHEN status = 'inactive' THEN 1 ELSE 0 END) AS inactiveUsers
+      FROM users
+    `,
+  );
+
+  const [[assetStats]] = await pool.query(
+    `
+      SELECT
+        COUNT(*) AS totalAssets,
+        SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) AS availableAssets,
+        SUM(CASE WHEN status = 'assigned' THEN 1 ELSE 0 END) AS assignedAssets,
+        SUM(CASE WHEN status = 'maintenance' THEN 1 ELSE 0 END) AS maintenanceAssets
+      FROM equipment
+    `,
+  );
+
+  const [[requestStats]] = await pool.query(
+    `
+      SELECT
+        COUNT(*) AS totalRequests,
+        SUM(CASE WHEN request_status = 'pending' THEN 1 ELSE 0 END) AS pendingRequests,
+        SUM(CASE WHEN request_status = 'approved' THEN 1 ELSE 0 END) AS approvedRequests,
+        SUM(CASE WHEN request_status = 'fulfilled' THEN 1 ELSE 0 END) AS fulfilledRequests
+      FROM requests
+    `,
+  );
+
+  const [[issueStats]] = await pool.query(
+    `
+      SELECT
+        SUM(CASE WHEN issue_status NOT IN ('resolved', 'closed') THEN 1 ELSE 0 END) AS openIssues
+      FROM issues
+    `,
+  );
+
+  const [[locationStats]] = await pool.query(
+    `
+      SELECT
+        (SELECT COUNT(*) FROM branches) AS totalBranches,
+        (SELECT COUNT(*) FROM country) AS totalCountries,
+        (SELECT COUNT(*) FROM department) AS totalDepartments
+    `,
+  );
+
+  const [roleBreakdown] = await pool.query(
+    `
+      SELECT
+        r.name AS role_name,
+        COUNT(*) AS total
+      FROM users u
+      INNER JOIN roles r ON r.id = u.role_id
+      GROUP BY r.id, r.name
+      ORDER BY total DESC, r.name ASC
+      LIMIT 6
+    `,
+  );
+
+  const totalUsers = Number(userStats?.totalUsers ?? 0);
+  const activeUsers = Number(userStats?.activeUsers ?? 0);
+  const pendingUsers = Number(userStats?.pendingUsers ?? 0);
+  const inactiveUsers = Number(userStats?.inactiveUsers ?? 0);
+  const totalAssets = Number(assetStats?.totalAssets ?? 0);
+  const availableAssets = Number(assetStats?.availableAssets ?? 0);
+  const assignedAssets = Number(assetStats?.assignedAssets ?? 0);
+  const maintenanceAssets = Number(assetStats?.maintenanceAssets ?? 0);
+  const totalRequests = Number(requestStats?.totalRequests ?? 0);
+  const pendingRequests = Number(requestStats?.pendingRequests ?? 0);
+  const approvedRequests = Number(requestStats?.approvedRequests ?? 0);
+  const fulfilledRequests = Number(requestStats?.fulfilledRequests ?? 0);
+  const openIssues = Number(issueStats?.openIssues ?? 0);
+  const totalBranches = Number(locationStats?.totalBranches ?? 0);
+  const totalCountries = Number(locationStats?.totalCountries ?? 0);
+  const totalDepartments = Number(locationStats?.totalDepartments ?? 0);
+
+  return {
+    intent: "system_admin_summary",
+    answer: [
+      `There are ${totalUsers} users in the system: ${activeUsers} active, ${pendingUsers} pending, and ${inactiveUsers} inactive.`,
+      `The platform currently tracks ${totalAssets} assets, ${totalRequests} requests, and ${openIssues} open issues.`,
+      `Coverage includes ${totalBranches} branches, ${totalCountries} countries, and ${totalDepartments} departments. Assets currently available: ${availableAssets}; assigned: ${assignedAssets}; under maintenance: ${maintenanceAssets}.`,
+      `Requests currently pending: ${pendingRequests}; approved: ${approvedRequests}; fulfilled: ${fulfilledRequests}.`,
+    ],
+    suggestions: [
+      "How many users do we have by role?",
+      "Summarize inventory status",
+      "Show pending requests",
+      "What makes this project special?",
+    ],
+    records: roleBreakdown.map((row) => ({
+      title: row.role_name,
+      subtitle: `${Number(row.total)} user(s)`,
+      meta: "Role distribution",
+    })),
+  };
+}
+
 async function getWorkflowHelp() {
   return {
     intent: "workflow_help",
@@ -3879,6 +4111,22 @@ async function getWorkflowHelp() {
       "What requests are waiting for approval?",
       "How do returns work?",
       "Summarize inventory status",
+    ],
+  };
+}
+
+function getDepreciationHelpResponse() {
+  return {
+    intent: "depreciation_help",
+    answer: [
+      "Airtel IMS now uses straight-line depreciation for device visibility.",
+      "The annual depreciation is calculated as purchase cost divided by lifespan years, with a default lifespan of 4 years when none is set.",
+      "Each device view can show annual depreciation, accumulated depreciation, and current book value based on the purchase date or purchase year.",
+    ],
+    suggestions: [
+      "Summarize inventory status",
+      "Find asset TAG-102",
+      "What makes this project special?",
     ],
   };
 }
@@ -3979,6 +4227,27 @@ function detectDirectChatbotIntent(scope, normalized) {
   }
 
   if (
+    normalized.includes("how many users") ||
+    normalized.includes("total users") ||
+    normalized.includes("user count") ||
+    normalized.includes("users in the system") ||
+    normalized.includes("system overview") ||
+    normalized.includes("admin overview") ||
+    normalized.includes("tell me about our system")
+  ) {
+    return "system_admin_summary";
+  }
+
+  if (
+    normalized.includes("depreciation") ||
+    normalized.includes("book value") ||
+    normalized.includes("asset value") ||
+    normalized.includes("device value")
+  ) {
+    return "depreciation_help";
+  }
+
+  if (
     normalized.includes("inventory") ||
     normalized.includes("asset summary") ||
     normalized.includes("equipment overview") ||
@@ -4050,6 +4319,14 @@ async function resolveChatbotIntent(user, message) {
     return "inventory_summary";
   }
 
+  if (
+    normalized.includes("users") ||
+    normalized.includes("accounts") ||
+    normalized.includes("system overview")
+  ) {
+    return scope === "admin" ? "system_admin_summary" : "fallback";
+  }
+
   return "fallback";
 }
 
@@ -4079,14 +4356,18 @@ async function buildChatbotResponseForIntent(user, intent, message) {
       return getEmployeeAssignmentSummary(user);
     case "inventory_summary":
       return getInventorySummary(user);
+    case "depreciation_help":
+      return getDepreciationHelpResponse();
+    case "system_admin_summary":
+      return getSystemAdminSummary(user);
     case "fulfillment_queue":
       return scope === "employee" ? getEmployeeRequestSummary(user) : getFulfillmentQueueSummary(user);
     default:
       return {
         intent: "fallback",
         answer: [
-          "I could not match that to a supported read-only Airtel IMS query yet.",
-          "Try asking about requests, assigned devices, approvals, fulfillment, stock, returns, maintenance, issues, or a specific asset tag.",
+          "I could not map that to a specific Airtel IMS workflow or data lookup yet.",
+          "Try asking about requests, assigned devices, approvals, fulfillment, stock, returns, maintenance, issues, a specific asset tag, or a general work question.",
         ],
         suggestions: getChatbotSuggestionsForScope(scope),
       };
@@ -4094,6 +4375,10 @@ async function buildChatbotResponseForIntent(user, intent, message) {
 }
 
 async function generateChatbotResponse(user, message) {
+  if (isProjectDifferentiationQuestion(message)) {
+    return buildProjectDifferentiationAnswer();
+  }
+
   const groundedResponse = await resolveGroundedChatbotResponse(user, message);
   if (groundedResponse) {
     return groundedResponse;
@@ -4113,6 +4398,11 @@ async function generateChatbotResponse(user, message) {
       if (generalAnswer) {
         return generalAnswer;
       }
+    }
+
+    const generalAnswer = await generateGeneralKnowledgeAnswer(message);
+    if (generalAnswer) {
+      return generalAnswer;
     }
   }
 
@@ -6312,7 +6602,11 @@ app.get("/api/admin/reports", async (_req, res) => {
           c.name AS category_name,
           b.name AS branch_name,
           co.name AS country_name,
-          e.purchase_date
+          e.purchase_date,
+          e.purchase_year,
+          e.purchase_cost,
+          e.lifespan_years,
+          e.refresh_due_at
         FROM equipment e
         LEFT JOIN categories c ON c.id = e.category_id
         LEFT JOIN branches b ON b.id = e.branch_id
@@ -6625,7 +6919,7 @@ app.get("/api/admin/export/users", async (_req, res) => {
       `,
     );
 
-    const csv = buildCsv(rows, [
+    const columns = [
       { key: "id", label: "User ID" },
       { key: "full_name", label: "Full Name" },
       { key: "first_name", label: "First Name" },
@@ -6643,11 +6937,18 @@ app.get("/api/admin/export/users", async (_req, res) => {
       { key: "department_name", label: "Department" },
       { key: "status", label: "Status" },
       { key: "created_at", label: "Created At" },
-    ]);
+    ];
+    const documentHtml = buildBrandedHtmlDocument({
+      title: "Admin Users Export",
+      subtitle: "Airtel IMS user account directory with identity, role, branch, and employment details.",
+      rows,
+      columns,
+      footerNote: "Generated from Airtel IMS admin user management.",
+    });
 
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="admin-users-${new Date().toISOString().slice(0, 10)}.csv"`);
-    return res.send(csv);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="admin-users-${new Date().toISOString().slice(0, 10)}.html"`);
+    return res.send(documentHtml);
   } catch (error) {
     return res.status(500).json({ message: normalizeError(error) });
   }
@@ -6674,26 +6975,31 @@ app.get("/api/admin/export/audit-logs", async (_req, res) => {
       `,
     );
 
-    const csv = buildCsv(
-      rows.map((row) => ({
-        ...row,
-        actor_identity: row.actor_name || row.actor_email || "System",
-        target_identity: row.target_name || row.target_email || "N/A",
-      })),
-      [
-        { key: "id", label: "Event ID" },
-        { key: "action_key", label: "Action Key" },
-        { key: "action_label", label: "Action" },
-        { key: "details", label: "Details" },
-        { key: "actor_identity", label: "Actor" },
-        { key: "target_identity", label: "Target" },
-        { key: "created_at", label: "Created At" },
-      ],
-    );
+    const exportRows = rows.map((row) => ({
+      ...row,
+      actor_identity: row.actor_name || row.actor_email || "System",
+      target_identity: row.target_name || row.target_email || "N/A",
+    }));
+    const columns = [
+      { key: "id", label: "Event ID" },
+      { key: "action_key", label: "Action Key" },
+      { key: "action_label", label: "Action" },
+      { key: "details", label: "Details" },
+      { key: "actor_identity", label: "Actor" },
+      { key: "target_identity", label: "Target" },
+      { key: "created_at", label: "Created At" },
+    ];
+    const documentHtml = buildBrandedHtmlDocument({
+      title: "Admin Audit Log Export",
+      subtitle: "Airtel IMS audit history showing actions, actors, targets, and timestamped system activity.",
+      rows: exportRows,
+      columns,
+      footerNote: "Generated from Airtel IMS audit logs.",
+    });
 
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="admin-audit-${new Date().toISOString().slice(0, 10)}.csv"`);
-    return res.send(csv);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="admin-audit-${new Date().toISOString().slice(0, 10)}.html"`);
+    return res.send(documentHtml);
   } catch (error) {
     return res.status(500).json({ message: normalizeError(error) });
   }
@@ -6730,7 +7036,7 @@ app.get("/api/admin/export/assets", async (_req, res) => {
       `,
     );
 
-    const csv = buildCsv(rows, [
+    const columns = [
       { key: "id", label: "Asset ID" },
       { key: "asset_tag", label: "Asset Tag" },
       { key: "serial_number", label: "Serial Number" },
@@ -6749,11 +7055,18 @@ app.get("/api/admin/export/assets", async (_req, res) => {
       { key: "device_health", label: "Device Health" },
       { key: "warranty_end_date", label: "Warranty End Date" },
       { key: "lifespan_years", label: "Lifespan Years" },
-    ]);
+    ];
+    const documentHtml = buildBrandedHtmlDocument({
+      title: "Admin Asset Export",
+      subtitle: "Airtel IMS asset register with category, branch, status, vendor, and lifecycle-related details.",
+      rows,
+      columns,
+      footerNote: "Generated from Airtel IMS asset inventory.",
+    });
 
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="admin-assets-${new Date().toISOString().slice(0, 10)}.csv"`);
-    return res.send(csv);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="admin-assets-${new Date().toISOString().slice(0, 10)}.html"`);
+    return res.send(documentHtml);
   } catch (error) {
     return res.status(500).json({ message: normalizeError(error) });
   }
@@ -6784,7 +7097,7 @@ app.get("/api/admin/export/requests", async (_req, res) => {
       `,
     );
 
-    const csv = buildCsv(rows, [
+    const columns = [
       { key: "id", label: "Request ID" },
       { key: "requester_name", label: "Requester" },
       { key: "requester_email", label: "Requester Email" },
@@ -6795,11 +7108,18 @@ app.get("/api/admin/export/requests", async (_req, res) => {
       { key: "country_name", label: "Country" },
       { key: "notes", label: "Notes" },
       { key: "created_at", label: "Created At" },
-    ]);
+    ];
+    const documentHtml = buildBrandedHtmlDocument({
+      title: "Admin Request Export",
+      subtitle: "Airtel IMS request overview with requester, category, approval ownership, and branch context.",
+      rows,
+      columns,
+      footerNote: "Generated from Airtel IMS request administration.",
+    });
 
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="admin-requests-${new Date().toISOString().slice(0, 10)}.csv"`);
-    return res.send(csv);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="admin-requests-${new Date().toISOString().slice(0, 10)}.html"`);
+    return res.send(documentHtml);
   } catch (error) {
     return res.status(500).json({ message: normalizeError(error) });
   }
