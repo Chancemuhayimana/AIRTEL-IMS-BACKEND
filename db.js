@@ -1,7 +1,7 @@
 import mysql from "mysql2/promise";
 import dotenv from "dotenv";
 
-dotenv.config(); // simple, no path needed
+dotenv.config();
 
 export const pool = mysql.createPool({
   host: process.env.MYSQL_HOST || "localhost",
@@ -9,7 +9,7 @@ export const pool = mysql.createPool({
   user: process.env.MYSQL_USER || "root",
   password: process.env.MYSQL_PASSWORD || "",
   database: process.env.MYSQL_DATABASE || "airtel_global_ims",
-  ssl: { rejectUnauthorized: true }, // add this for TiDB
+  ssl: { rejectUnauthorized: true }, // required for TiDB
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
