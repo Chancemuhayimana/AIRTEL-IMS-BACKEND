@@ -10872,7 +10872,7 @@ initializeSystem()
       console.log(`Airtel Global IMS API running on http://localhost:${port}`);
     });
   })
-  .catch((error) => {
-    console.error("Failed to start API:", error.message);
+.catch((error) => {
+    console.error("Failed to start API:", error);
     process.exit(1);
-  });
+});
