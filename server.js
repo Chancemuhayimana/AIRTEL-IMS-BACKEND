@@ -55,7 +55,9 @@ let chatbotServiceStartAttempted = false;
 let chatbotIntentCatalogPromise = null;
 let chatbotKnowledgeChunksPromise = null;
 
-app.use(cors());
+app.use(cors({
+  origin: "https://airtel-ims.netlify.app"
+}));
 app.use(express.json({ limit: "5mb" }));
 
 function hashPassword(password) {
