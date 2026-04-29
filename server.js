@@ -1184,8 +1184,13 @@ async function ensureEquipmentProfileColumns() {
 async function ensureUserPhoneColumn() {
   await pool.query(`
     ALTER TABLE users
-    ADD COLUMN IF NOT EXISTS phone_number VARCHAR(20) NULL UNIQUE
+    ADD COLUMN IF NOT EXISTS phone_number VARCHAR(20) NULL
   `);
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD UNIQUE INDEX IF NOT EXISTS uq_users_phone_number (phone_number)
+  `).catch(() => undefined);
 }
 
 async function ensureUserProfileImageColumn() {
